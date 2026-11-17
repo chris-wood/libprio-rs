@@ -376,6 +376,8 @@ impl<F: NttFriendlyFieldElement> Type for Average<F> {
     }
 }
 
+pub mod commitment_bound_histogram;
+
 /// The histogram type. Each measurement is an integer in `[0, length)` and the aggregate is a
 /// histogram counting the number of occurrences of each measurement.
 #[derive(PartialEq, Eq)]
