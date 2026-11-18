@@ -267,7 +267,7 @@ mod histogram_binding_tests {
         let blind1 = rho - blind0;
         let commitment = h * scalar(2) + r * rho;
 
-        // Existing first request: Leader's verifier share and its point.
+        // DAP request extension: Leader's vanilla verifier share and its point.
         let p0 = index_point(
             vdaf.index_share(CTX, 0, &shares[0]).unwrap(),
             blind0,
@@ -279,8 +279,8 @@ mod histogram_binding_tests {
             .verify_init(&[0; 32], CTX, 0, &(), &nonce, &public_share, &shares[0])
             .unwrap();
 
-        // Helper computes the verifier message and its own point, checks both,
-        // and returns the message and point in the existing response.
+        // Helper computes the vanilla verifier message and its own point,
+        // and returns them in a proposed versioned DAP response encoding.
         let p1 = index_point(
             vdaf.index_share(CTX, 1, &shares[1]).unwrap(),
             blind1,

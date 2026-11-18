@@ -3,7 +3,8 @@
 //! Experimental P-256 check on two index shares projected from a vanilla histogram.
 //!
 //! In one-round Prio3, the Leader sends its locally computed point with its
-//! verifier share; the Helper returns its point with the verifier message.
+//! verifier share via a DAP request extension. The Helper returns its point
+//! with the verifier message via a proposed versioned DAP response encoding.
 //! Both calculate from their own expanded VDAF input share and require this
 //! check and Prio3 validity before aggregating. A corrupt aggregator can forge
 //! its point; this is not an integrity guarantee against a malicious aggregator.
