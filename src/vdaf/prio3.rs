@@ -37,10 +37,7 @@ use crate::field::{
 use crate::flp::gadgets::ParallelSumMultithreaded;
 use crate::flp::gadgets::{Mul, ParallelSum};
 use crate::flp::{
-    types::{
-        commitment_bound_histogram::CommitmentBoundHistogram, Average, Count, Histogram,
-        MultihotCountVec, Sum, SumVec,
-    },
+    types::{Average, Count, Histogram, MultihotCountVec, Sum, SumVec},
     Type, TypeWithNoise,
 };
 use crate::prng::Prng;
@@ -168,49 +165,22 @@ impl Prio3Histogram {
             Histogram::new(length, chunk_length)?,
         )
     }
-}
 
-/// Experimental histogram whose private tag equals its 1-based selected bucket.
-/// Aggregators MUST additionally check the tag shares against the externally
-/// authenticated, per-report group commitment before aggregating output shares.
-pub type Prio3CommitmentBoundHistogram = Prio3<CommitmentBoundHistogram, XofTurboShake128, 32>;
-
-impl Prio3CommitmentBoundHistogram {
-    /// Construct the two-aggregator experimental histogram variant.
-    pub fn new_commitment_bound_histogram(
-        num_aggregators: u8,
-        length: usize,
-        chunk_length: usize,
-    ) -> Result<Self, VdafError> {
-        if num_aggregators != 2 {
-            return Err(VdafError::Uncategorized(
-                "commitment check requires two aggregators".into(),
-            ));
-        }
-        // Local experimental ID. Never reuse Prio3Histogram's 0x00000004.
-        Prio3::new(
-            num_aggregators,
-            1,
-            0xffff0001,
-            CommitmentBoundHistogram::new(length, chunk_length)?,
-        )
-    }
-
-    /// Canonical Field128 representative of this aggregator's private tag share.
-    /// Call only inside the aggregator after decoding its own input share.
-    pub fn tag_share(
+    /// Canonical Field128 share of the 1-based bucket index, projected from
+    /// this aggregator's actual untruncated vanilla histogram input share.
+    /// This is an application-level check, not a new Prio3 algorithm.
+    #[cfg(feature = "experimental")]
+    pub fn index_share(
         &self,
         ctx: &[u8],
         agg_id: usize,
         input_share: &Prio3InputShare<Field128, 32>,
     ) -> Result<u128, VdafError> {
         let agg_id = self.role_try_from(agg_id)?;
-        let tag = match input_share {
+        let buckets = match input_share {
             Prio3InputShare::Leader {
                 measurement_share, ..
-            } if agg_id == 0 => *measurement_share
-                .get(self.typ.tag_index())
-                .ok_or_else(|| VdafError::Uncategorized("missing tag share".into()))?,
+            } if agg_id == 0 => measurement_share.clone(),
             Prio3InputShare::Helper {
                 meas_and_proofs_share,
                 ..
@@ -219,15 +189,26 @@ impl Prio3CommitmentBoundHistogram {
                 &[&self.domain_separation_tag(DST_MEASUREMENT_SHARE), ctx],
                 &[&[agg_id]],
             )
-            .into_field_vec(self.typ.output_len() + 1)[self.typ.tag_index()],
+            .into_field_vec(self.typ.output_len()),
             _ => return Err(VdafError::Uncategorized("wrong aggregator share".into())),
         };
-        Ok(u128::from(tag))
+        if buckets.len() != self.typ.output_len() {
+            return Err(VdafError::Uncategorized(
+                "invalid histogram share length".into(),
+            ));
+        }
+        let index = buckets
+            .iter()
+            .enumerate()
+            .fold(Field128::zero(), |sum, (i, value)| {
+                sum + *value * Field128::from(i as u128 + 1)
+            });
+        Ok(u128::from(index))
     }
 }
 
-#[cfg(test)]
-mod commitment_bound_tests {
+#[cfg(all(test, feature = "experimental"))]
+mod histogram_binding_tests {
     use super::*;
     use crate::{
         field::FieldElement,
@@ -237,28 +218,23 @@ mod commitment_bound_tests {
     const CTX: &[u8] = b"commitment-bound-histogram-v1";
 
     #[test]
-    fn aggregates_without_revealing_tags() {
-        let vdaf = Prio3CommitmentBoundHistogram::new_commitment_bound_histogram(2, 3, 2).unwrap();
+    fn aggregates_without_revealing_indices() {
+        let vdaf = Prio3Histogram::new_histogram(2, 3, 2).unwrap();
         assert_eq!(
             run_vdaf(CTX, &vdaf, &(), [0, 1, 0, 2]).unwrap(),
             vec![2, 1, 1]
         );
         assert_eq!(vdaf.output_len(), 3);
-        assert_ne!(
-            vdaf.algorithm_id(),
-            Prio3Histogram::new_histogram(2, 3, 2)
-                .unwrap()
-                .algorithm_id()
-        );
+        assert_eq!(vdaf.algorithm_id(), 0x00000004);
     }
 
     #[test]
-    fn tag_shares_match_selected_bucket_and_tampering_fails() {
-        let vdaf = Prio3CommitmentBoundHistogram::new_commitment_bound_histogram(2, 3, 2).unwrap();
+    fn projected_index_shares_match_selected_bucket_and_tampering_fails() {
+        let vdaf = Prio3Histogram::new_histogram(2, 3, 2).unwrap();
         let nonce = [2; 16];
         let (public_share, mut shares) = vdaf.shard(CTX, &1, &nonce).unwrap();
-        let left = vdaf.tag_share(CTX, 0, &shares[0]).unwrap();
-        let right = vdaf.tag_share(CTX, 1, &shares[1]).unwrap();
+        let left = vdaf.index_share(CTX, 0, &shares[0]).unwrap();
+        let right = vdaf.index_share(CTX, 1, &shares[1]).unwrap();
         let p = Field128::modulus();
         let sum = if left >= p - right {
             left - (p - right)
@@ -271,18 +247,17 @@ mod commitment_bound_tests {
             measurement_share, ..
         } = &mut shares[0]
         {
-            measurement_share[3] += Field128::one();
+            measurement_share[0] += Field128::one();
         }
         assert!(run_vdaf_verify(&vdaf, &[0; 32], CTX, &(), &nonce, public_share, shares).is_err());
     }
 
-    #[cfg(feature = "experimental")]
     #[test]
     fn one_round_points_bind_actual_prio3_shares() {
         use super::commitment_check::{matches_commitment, scalar, tag_point};
         use p256::{ProjectivePoint, Scalar};
 
-        let vdaf = Prio3CommitmentBoundHistogram::new_commitment_bound_histogram(2, 3, 2).unwrap();
+        let vdaf = Prio3Histogram::new_histogram(2, 3, 2).unwrap();
         let nonce = [4; 16];
         let (public_share, shares) = vdaf.shard(CTX, &1, &nonce).unwrap();
         let h = ProjectivePoint::GENERATOR * Scalar::from(7u64);
@@ -293,14 +268,26 @@ mod commitment_bound_tests {
         let commitment = h * scalar(2) + r * rho;
 
         // Existing first request: Leader's verifier share and its point.
-        let p0 = tag_point(vdaf.tag_share(CTX, 0, &shares[0]).unwrap(), blind0, &h, &r).unwrap();
+        let p0 = tag_point(
+            vdaf.index_share(CTX, 0, &shares[0]).unwrap(),
+            blind0,
+            &h,
+            &r,
+        )
+        .unwrap();
         let (leader_state, leader_share) = vdaf
             .verify_init(&[0; 32], CTX, 0, &(), &nonce, &public_share, &shares[0])
             .unwrap();
 
         // Helper computes the verifier message and its own point, checks both,
         // and returns the message and point in the existing response.
-        let p1 = tag_point(vdaf.tag_share(CTX, 1, &shares[1]).unwrap(), blind1, &h, &r).unwrap();
+        let p1 = tag_point(
+            vdaf.index_share(CTX, 1, &shares[1]).unwrap(),
+            blind1,
+            &h,
+            &r,
+        )
+        .unwrap();
         let (helper_state, helper_share) = vdaf
             .verify_init(&[0; 32], CTX, 1, &(), &nonce, &public_share, &shares[1])
             .unwrap();
