@@ -254,7 +254,7 @@ mod histogram_binding_tests {
 
     #[test]
     fn one_round_points_bind_actual_prio3_shares() {
-        use super::commitment_check::{matches_commitment, scalar, tag_point};
+        use super::commitment_check::{index_point, matches_commitment, scalar};
         use p256::{ProjectivePoint, Scalar};
 
         let vdaf = Prio3Histogram::new_histogram(2, 3, 2).unwrap();
@@ -268,7 +268,7 @@ mod histogram_binding_tests {
         let commitment = h * scalar(2) + r * rho;
 
         // Existing first request: Leader's verifier share and its point.
-        let p0 = tag_point(
+        let p0 = index_point(
             vdaf.index_share(CTX, 0, &shares[0]).unwrap(),
             blind0,
             &h,
@@ -281,7 +281,7 @@ mod histogram_binding_tests {
 
         // Helper computes the verifier message and its own point, checks both,
         // and returns the message and point in the existing response.
-        let p1 = tag_point(
+        let p1 = index_point(
             vdaf.index_share(CTX, 1, &shares[1]).unwrap(),
             blind1,
             &h,
